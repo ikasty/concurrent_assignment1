@@ -259,44 +259,53 @@ void *do_pthread(void *data)
 	dprintf("tid #%d is start...\n", tid);
 
 	// initialize - search local pivot
+	thread_data[tid].pivot = -DBL_MAX;
 	for (i = tid; i < n; i += p)
 	{
-		if (thread_data[tid].pivot < A(i, current))
+		if (thread_data[tid].pivot < A(i, 0))
 		{
-			thread_data[tid].pivot = A(i, current);
+			thread_data[tid].pivot = A(i, 0);
 			thread_data[tid].pivot_line = i;
 		}
 	}
 
-	pthread_mutex_lock(&(c_barrier.count_lock));
-		c_barrier.done_count++;
-		if (c_barrier.done_count == p)
-		{
-			c_barrier.done_count = 0;
-
-			// collecting pivot
-			pivot = -DBL_MAX;
-			for (i = 0; i < p; i++)
-			{
-				if (pivot < thread_data[i].pivot)
-				{
-					pivot = thread_data[i].pivot;
-					pivot_line = thread_data[i].pivot_line;
-				}
-			}
-			dprintf("find pivot %.16f in %d\n\n", pivot, pivot_line);
-
-			pthread_cond_broadcast(&(c_barrier.count_cond));
-		}
-		else
-		{
-			while (pthread_cond_wait(&(c_barrier.count_cond), &(c_barrier.count_lock)) != 0);
-		}
-	pthread_mutex_unlock(&(c_barrier.count_lock));
-
 	// - 1st phase -
-	while (current < n)
+	/*** current increase AFTER while statement ***/
+	while (current < n - 1)
 	{
+		pthread_mutex_lock(&(c_barrier.count_lock));
+			c_barrier.done_count++;
+			if (c_barrier.done_count == p)
+			{
+				c_barrier.done_count = 0;
+
+				// --- collect pivot ---
+				pivot = -DBL_MAX;
+				for (i = 0; i < p; i++)
+				{
+					if (pivot < thread_data[i].pivot)
+					{
+						pivot = thread_data[i].pivot;
+						pivot_line = thread_data[i].pivot_line;
+					}
+				}
+
+				#ifdef DEBUG_ENABLED
+					print_result();
+					dprintf("find pivot %.16f in %d\n\n", pivot, pivot_line);
+				#endif
+
+				// increase current
+				current++;
+				printf("current: %d\n", current);
+				pthread_cond_broadcast(&(c_barrier.count_cond));
+			}
+			else
+			{
+				while (pthread_cond_wait(&(c_barrier.count_cond), &(c_barrier.count_lock)) != 0);
+			}
+		pthread_mutex_unlock(&(c_barrier.count_lock));
+
 		// -- switching pivot --
 		if (current != pivot_line)
 		{
@@ -340,7 +349,7 @@ void *do_pthread(void *data)
 		// -- set other to 0 && search pivot --
 		thread_data[tid].pivot_line = -1;
 		thread_data[tid].pivot = -DBL_MAX;
-		for (i = current + 1 + tid; i < n; i += p)
+		for (i = (current + 1) + tid; i < n; i += p)
 		{
 			double target = -A(i, current);
 
@@ -351,48 +360,18 @@ void *do_pthread(void *data)
 				A(i, j) += target * A(current, j);
 			}
 
-			// --- search local pivot ---
+			// --- search next local pivot ---
 			if (thread_data[tid].pivot < A(i, current + 1))
 			{
 				thread_data[tid].pivot = A(i, current + 1);
 				thread_data[tid].pivot_line = i;
 			}
 		}
-
-		pthread_mutex_lock(&(c_barrier.count_lock));
-			c_barrier.done_count++;
-			if (c_barrier.done_count == p)
-			{
-				c_barrier.done_count = 0;
-
-				// collecting pivot
-				pivot = -DBL_MAX;
-				for (i = 0; i < p; i++)
-				{
-					if (pivot < thread_data[i].pivot)
-					{
-						pivot = thread_data[i].pivot;
-						pivot_line = thread_data[i].pivot_line;
-					}
-				}
-
-				#ifdef DEBUG_ENABLED
-					print_result();
-					dprintf("find pivot %.16f in %d\n\n", pivot, pivot_line);
-				#endif
-
-				// increase current
-				current++;
-				pthread_cond_broadcast(&(c_barrier.count_cond));
-			}
-			else
-			{
-				while (pthread_cond_wait(&(c_barrier.count_cond), &(c_barrier.count_lock)) != 0);
-			}
-		pthread_mutex_unlock(&(c_barrier.count_lock));
 	}
+	current = n;
 
 	// - 2nd phase -
+	/*** current decrease AFTER while ***/
 	while (current > 1)
 	{
 		// -- decrese current & do barrier --
@@ -413,7 +392,7 @@ void *do_pthread(void *data)
 		pthread_mutex_unlock(&(c_barrier.count_lock));
 
 		// exit if size is too small
-		if (tid >= current) pthread_exit(NULL);;
+		if (tid >= current) pthread_exit(NULL);
 
 		// -- back substitution --
 		for (i = tid; i < current; i += p)
@@ -436,7 +415,8 @@ void do_solve()
 	pthread_attr_init(&thread_attr);
 
 	// initialize
-	current = status = c_barrier.done_count = 0;
+	status = c_barrier.done_count = 0;
+	current = -1;
 	//if ( !posix_memalign(&thread_data, 0x40, p * sizeof(struct Thread_data)) ) {return ;}
 	thread_data = malloc(p * sizeof(struct Thread_data));
 	pthread_mutex_init(&(c_barrier.count_lock), NULL);
