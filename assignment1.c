@@ -31,14 +31,19 @@
 #define NANOSECOND 1000000000.0
 #define ELAPSED(a, b) ((b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) / NANOSECOND)
 
+#define true 1
+#define false 0
+
 void do_solve();
 
-double *_A, *_orig;
+double *_A, *_B, *_origA, *_origB;
 int n, p;
 int current = -1;
 
-#define A(a, b) (_A[a * (n + 1) + b])
-#define orig(a, b) (_orig[a * (n + 1) + b])
+#define A(a, b) (_A[a * n + b])
+#define B(i) (_B[i])
+#define origA(a, b) (_origA[a * n + b])
+#define origB(i) (_origB[i])
 
 // for debug-purpose
 #ifdef DEBUG_ENABLED
@@ -47,11 +52,11 @@ void print_result()
 	for (int i = 0; i < n; i++)
 	{
 		dprintf("  %03d: ", i);
-		for (int j = 0; j < n + 1; j++)
+		for (int j = 0; j < n; j++)
 		{
 			printf("%f ", A(i, j));
 		}
-		printf("\n");
+		printf("%f\n", B(i));
 	}
 }
 #endif
@@ -74,10 +79,13 @@ int main(int argc, char **argv)
 	if (errno > 0 || *ptr != '\0' || p < 1 || p > INT_MAX) { return -1; }
 
 	//_A = malloc(n * (n + 1) * sizeof(double));
-	errno = posix_memalign((void **)&_A, 0x40, n * (n + 1) * sizeof(double));
+	errno = posix_memalign((void **)&_A, 0x40, n * n * sizeof(double));
 	if (errno > 0) { return -1; }
-	dprintf("array A address is %p\n", _A);
-	_orig = malloc(n * (n + 1) * sizeof(double));
+	errno = posix_memalign((void **)&_B, 0x40, n * sizeof(double));
+	if (errno > 0) { return -1; }
+
+	_origA = malloc(n * n * sizeof(double));
+	_origB = malloc(n * sizeof(double));
 
 	// time elapse
 	struct timespec start, finish;
@@ -96,11 +104,14 @@ int main(int argc, char **argv)
 			//drand48_r(&rand_buffer, &A(i, j));
 			A(i, j) = (double)rand() / (RAND_MAX);
 		}
+		//drand48_r(&rand_buffer, &B(i));
+		B(i) = (double)rand() / (RAND_MAX);
 	}
 	clock_gettime(CLOCK_MONOTONIC, &finish);
 	total_time = ELAPSED(start, finish);
 
-	memcpy(_orig, _A, sizeof(double) * n * (n + 1));
+	memcpy(_origA, _A, sizeof(double) * n * n);
+	memcpy(_origB, _B, sizeof(double) * n);
 
 	#ifdef DEBUG_ENABLED
 		// print original array
@@ -126,10 +137,10 @@ int main(int argc, char **argv)
 		double check_value = 0.0;
 		for (j = 0; j < n; j++)
 		{
-			check_value += orig(i, j) * A(j, n);
+			check_value += origA(i, j) * B(j);
 		}
-		dprintf("calculated: %.32lf, orig: %.32lf\n", check_value, orig(i, n));
-		diff += (check_value - orig(i, n)) * (check_value - orig(i, n));
+		dprintf("calculated: %.32lf, orig: %.32lf\n", check_value, origB(i));
+		diff += (check_value - origB(i)) * (check_value - origB(i));
 	}
 
 	printf( "\n"
@@ -170,12 +181,17 @@ void do_solve()
 		if (current != pivot_line)
 		{
 			double temp;
-			for (j = current; j < n + 1; j++)
+			for (j = current; j < n; j++)
 			{
 				temp = A(current, j);
 				A(current, j) = A(pivot_line, j);
 				A(pivot_line, j) = temp;
 			}
+
+			temp = B(current);
+			B(current) = B(pivot_line);
+			B(pivot_line) = temp;
+
 			#ifdef DEBUG_ENABLED
 				print_result();
 				dprintf("switch pivot\n");
@@ -184,9 +200,12 @@ void do_solve()
 
 
 		// -- set pivot to 1 --
-		for (j = current + 1; j < n + 1; j++)
+		for (j = current + 1; j < n; j++)
 			A(current, j) /= pivot;
+
+		B(current) /= pivot;
 		A(current, current) = 1;
+
 		#ifdef DEBUG_ENABLED
 			print_result();
 			dprintf("set pivot to 1\n");
@@ -196,10 +215,11 @@ void do_solve()
 		for (i = current + 1; i < n; i++)
 		{
 			double target = -A(i, current);
-			for (j = current; j < n + 1; j++)
+			for (j = current; j < n; j++)
 			{
 				A(i, j) += target * A(current, j);
 			}
+			B(i) += target * B(current);
 		}
 
 		#ifdef DEBUG_ENABLED
@@ -216,8 +236,9 @@ void do_solve()
 		for (i = 0; i < current; i++)
 		{
 			double target = -A(i, current);
-			A(i, current) = 0;
-			A(i, n) += target * A(current, n);
+			// doesn't need
+			// A(i, current) = 0;
+			B(i) += target * B(current);
 		}
 	}
 	// - 2nd phase end -
@@ -230,12 +251,11 @@ struct Thread_data
 	double pivot;		/* 8 bytes */
 	int pivot_line;		/* 4 bytes */
 	uint8_t pad[52];	/* 52 bytes */
-} *thread_data;			/* = 64 byte aligned */
+}	*thread_data;		/* = 64 byte aligned */
 #endif
 
 #ifdef PTHREAD
-// pthread
-int status;
+
 int pivot_line;
 double pivot;
 
@@ -244,8 +264,7 @@ struct
 	pthread_mutex_t count_lock;
 	pthread_cond_t count_cond;
 	int done_count;
-} c_barrier;
-pthread_barrier_t barrier;
+}	c_barrier;
 
 void *do_pthread(void *data)
 {
@@ -257,7 +276,7 @@ void *do_pthread(void *data)
 	int block_count = n / align;
 
 	dprintf("tid #%d is start...\n", tid);
-
+/*
 	// initialize - search local pivot
 	thread_data[tid].pivot = -DBL_MAX;
 	for (i = tid; i < n; i += p)
@@ -268,11 +287,24 @@ void *do_pthread(void *data)
 			thread_data[tid].pivot_line = i;
 		}
 	}
-
+*/
 	// - 1st phase -
 	/*** current increase AFTER while statement ***/
 	while (current < n - 1)
 	{
+		// --- search *next* local pivot ---
+		thread_data[tid].pivot_line = -1;
+		thread_data[tid].pivot = -DBL_MAX;
+		for (i = (current + 1) + tid; i < n; i += p)
+		{
+			if (thread_data[tid].pivot < A(i, (current + 1)))
+			{
+				thread_data[tid].pivot = A(i, (current + 1));
+				thread_data[tid].pivot_line = i;
+			}
+		}
+
+		// barrier
 		pthread_mutex_lock(&(c_barrier.count_lock));
 			c_barrier.done_count++;
 			if (c_barrier.done_count == p)
@@ -311,51 +343,84 @@ void *do_pthread(void *data)
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
 			if (end_block < current) continue;
-			if (start_block <= current) start_block = current;
+			if ( __builtin_expect(start_block < current, false) ) start_block = current;
 
 			// -- switching pivot --
-			if (current != pivot_line)
+			if ( __builtin_expect(current != pivot_line, true) ) // usually true
 			{
 				double temp;
 
-				for (j = start_block; j < end_block && j < n + 1; j++)
+				for (j = start_block; j < end_block && j < n; j++)
 				{
 					temp = A(current, j);
 					A(current, j) = A(pivot_line, j);
 					A(pivot_line, j) = temp;
 				}
+
+				#ifdef DEBUG_ENABLED
+					print_result();
+					dprintf("switching finished\n\n");
+				#endif
 			}
 
 			// -- set pivot to 1 --
-			for (j = start_block; j < end_block && j < n + 1; j++)
+			for (j = start_block; j < end_block && j < n; j++)
 			{
 				A(current, j) /= pivot;
 			}
+			#ifdef DEBUG_ENABLED
+				print_result();
+				dprintf("set pivot to 1\n\n");
+			#endif
 		}
 
-		pthread_barrier_wait(&barrier);
+		// barrier
+		pthread_mutex_lock(&(c_barrier.count_lock));
+			c_barrier.done_count++;
+			if (c_barrier.done_count == p)
+			{
+				c_barrier.done_count = 0;
 
-		// -- set other to 0 && search pivot --
-		thread_data[tid].pivot_line = -1;
-		thread_data[tid].pivot = -DBL_MAX;
+				// switching & set on B
+				if ( __builtin_expect(current != pivot_line, true) ) // usually true
+				{
+					double temp;
+					temp = B(current);
+					B(current) = B(pivot_line);
+					B(pivot_line) = temp;
+				}
+				B(current) /= pivot;
+
+				#ifdef DEBUG_ENABLED
+					print_result();
+					dprintf("switch and divided on B\n\n");
+				#endif
+
+				pthread_cond_broadcast(&(c_barrier.count_cond));
+			}
+			else
+			{
+				while (pthread_cond_wait(&(c_barrier.count_cond), &(c_barrier.count_lock)) != 0);
+			}
+		pthread_mutex_unlock(&(c_barrier.count_lock));
+
+		// -- set other to 0 --
 		for (i = (current + 1) + tid; i < n; i += p)
 		{
 			double target = -A(i, current);
 
-			// --- set other to 0 ---
-			A(i, current) = 0;
-			for (j = current + 1; j < n + 1; j++)
+			// doesn't need
+			 A(i, current) = 0;
+			for (j = (current + 1); j < n; j++)
 			{
 				A(i, j) += target * A(current, j);
 			}
-
-			// --- search *next* local pivot ---
-			if (thread_data[tid].pivot < A(i, current + 1))
-			{
-				thread_data[tid].pivot = A(i, current + 1);
-				thread_data[tid].pivot_line = i;
-			}
+			B(i) += target * B(current);
 		}
+		#ifdef DEBUG_ENABLED
+			print_result();
+			dprintf("set to 0 finish\n\n");
+		#endif
 	}
 	current = n;
 
@@ -389,7 +454,7 @@ void *do_pthread(void *data)
 			double target = -A(i, current);
 			// doesn't need
 			// A(i, current) = 0;
-			A(i, n) += target * A(current, n);
+			B(i) += target * B(current);
 		}
 	}
 
@@ -403,15 +468,14 @@ void do_solve()
 
 	pthread_attr_init(&thread_attr);
 
-	// initialize
-	status = c_barrier.done_count = 0;
-	
-	int err = posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data));
-	if (err > 0) return ;
+	//int err = posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data));
+	//if (err > 0) return ;
+	thread_data = malloc(p * sizeof(struct Thread_data));
 
+	// barrier init
+	c_barrier.done_count = 0;
 	pthread_mutex_init(&(c_barrier.count_lock), NULL);
 	pthread_cond_init(&(c_barrier.count_cond), NULL);
-	pthread_barrier_init(&barrier, NULL, p);
 
 	for (int i = 0; i < p; i++)
 	{
@@ -419,7 +483,7 @@ void do_solve()
 		pthread_create(&threads[i], &thread_attr, do_pthread, data);
 	}
 
-	for (int i = 0; i < p - 1; i++)
+	for (int i = 0; i < p; i++)
 	{
 		pthread_join(threads[i], NULL);
 	}
@@ -472,40 +536,44 @@ void do_solve()
 		// -- switch pivot --
 		if (current != pivot_line)
 		{
-			#pragma omp parallel num_threads(p) default(none) private(j) shared(current, pivot_line, n, _A)
+			double temp;
+			#pragma omp parallel num_threads(p) default(none) private(j, temp) shared(current, pivot_line, n, _A)
 			{
-				double temp;
-
 				#pragma omp for
-				for (j = current; j < n + 1; j++)
+				for (j = current; j < n; j++)
 				{
 					temp = A(current, j);
 					A(current, j) = A(pivot_line, j);
 					A(pivot_line, j) = temp;
 				}
 			}
+			temp = B(current);
+			B(current) = B(pivot_line);
+			B(pivot_line) = temp;
 		}
 
 		// -- set pivot to 1 --
 		#pragma omp parallel num_threads(p) default(none) private(j) shared(current, pivot, n, _A)
 		{
 			#pragma omp for
-			for (j = current + 1; j < n + 1; j++)
+			for (j = current + 1; j < n; j++)
 				A(current, j) /= pivot;
 		}
+		B(current) /= pivot;
 		A(current, current) = 1;
 
 		// -- set other to 0 --
-		#pragma omp parallel num_threads(p) default(none) private(i, j) shared(current, n, _A)
+		#pragma omp parallel num_threads(p) default(none) private(i, j) shared(current, n, _A, _B)
 		{
 			#pragma omp for
 			for (i = current + 1; i < n; i++)
 			{
 				double target = -A(i, current);
-				for (j = current; j < n + 1; j++)
+				for (j = current; j < n; j++)
 				{
 					A(i, j) += target * A(current, j);
 				}
+				B(i) += target * B(current);
 			}
 		}
 		#ifdef DEBUG_ENABLED
@@ -518,14 +586,15 @@ void do_solve()
 	while (--current > 0)
 	{
 		// -- set other to 0 --
-		#pragma omp parallel num_threads(p) default(none) private(i) shared(current, n, _A)
+		#pragma omp parallel num_threads(p) default(none) private(i) shared(current, n, _A, _B)
 		{
 			#pragma omp for
 			for (i = 0; i < current; i++)
 			{
 				double target = -A(i, current);
-				A(i, current) = 0;
-				A(i, n) += target * A(current, n);
+				// doesn't need
+				// A(i, current) = 0;
+				B(i) += target * B(current);
 			}
 		}
 	}
