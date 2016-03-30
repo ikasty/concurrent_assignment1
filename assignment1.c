@@ -446,7 +446,6 @@ void *do_pthread(void *data)
 				c_barrier.done_count = 0;
 				current--;
 
-				if (p > current) p = current;
 				pthread_cond_broadcast(&(c_barrier.count_cond));
 			}
 			else
@@ -455,16 +454,22 @@ void *do_pthread(void *data)
 			}
 		pthread_mutex_unlock(&(c_barrier.count_lock));
 
-		// exit if size is too small
-		if (tid >= current) pthread_exit(NULL);
 
 		// -- back substitution --
-		for (i = tid; i < current; i += p)
+		for (int block = block_count - tid; block >= 0; block -= p)
 		{
-			double target = -A(i, current);
-			// doesn't need
-			// A(i, current) = 0;
-			B(i) += target * B(current);
+			int start_block = block * align;
+			int end_block = (block + 1) * align;
+			if (start_block > current) continue;
+			if (end_block > current) end_block = current;
+
+			for (i = start_block; i < end_block && i < current; i++)
+			{
+				double target = -A(i, current);
+				// doesn't need
+				// A(i, current) = 0;
+				B(i) += target * B(current);
+			}
 		}
 	}
 
