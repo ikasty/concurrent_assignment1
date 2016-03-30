@@ -297,7 +297,6 @@ void *do_pthread(void *data)
 
 				// increase current
 				current++;
-				printf("current: %d\n", current);
 				pthread_cond_broadcast(&(c_barrier.count_cond));
 			}
 			else
@@ -306,17 +305,18 @@ void *do_pthread(void *data)
 			}
 		pthread_mutex_unlock(&(c_barrier.count_lock));
 
-		// -- switching pivot --
-		if (current != pivot_line)
+		// block operation - operate row block
+		for (int block = tid; block <= block_count; block += p)
 		{
-			double temp;
+			int start_block = block * align;
+			int end_block = (block + 1) * align;
+			if (end_block < current) continue;
+			if (start_block <= current) start_block = current;
 
-			for (int block = tid; block <= block_count; block += p)
+			// -- switching pivot --
+			if (current != pivot_line)
 			{
-				int start_block = block * align;
-				int end_block = (block + 1) * align;
-				if (end_block < current) continue;
-				if (start_block < current) start_block = current;
+				double temp;
 
 				for (j = start_block; j < end_block && j < n + 1; j++)
 				{
@@ -326,24 +326,13 @@ void *do_pthread(void *data)
 				}
 			}
 
-			pthread_barrier_wait(&barrier);
-		}
-
-		// set pivot to 1
-		for (int block = tid; block <= block_count; block += p)
-		{
-			int start_block = block * align;
-			int end_block = (block + 1) * align;
-			if (end_block < current) continue;
-			if (start_block <= current) start_block = current + 1;
-
+			// -- set pivot to 1 --
 			for (j = start_block; j < end_block && j < n + 1; j++)
 			{
 				A(current, j) /= pivot;
 			}
 		}
-	
-		A(current, current) = 1;
+
 		pthread_barrier_wait(&barrier);
 
 		// -- set other to 0 && search pivot --
@@ -360,7 +349,7 @@ void *do_pthread(void *data)
 				A(i, j) += target * A(current, j);
 			}
 
-			// --- search next local pivot ---
+			// --- search *next* local pivot ---
 			if (thread_data[tid].pivot < A(i, current + 1))
 			{
 				thread_data[tid].pivot = A(i, current + 1);
@@ -371,7 +360,7 @@ void *do_pthread(void *data)
 	current = n;
 
 	// - 2nd phase -
-	/*** current decrease AFTER while ***/
+	/*** current decrease AFTER while statement ***/
 	while (current > 1)
 	{
 		// -- decrese current & do barrier --
@@ -398,7 +387,7 @@ void *do_pthread(void *data)
 		for (i = tid; i < current; i += p)
 		{
 			double target = -A(i, current);
-			// it doesn't need
+			// doesn't need
 			// A(i, current) = 0;
 			A(i, n) += target * A(current, n);
 		}
@@ -416,9 +405,10 @@ void do_solve()
 
 	// initialize
 	status = c_barrier.done_count = 0;
-	current = -1;
-	//if ( !posix_memalign(&thread_data, 0x40, p * sizeof(struct Thread_data)) ) {return ;}
-	thread_data = malloc(p * sizeof(struct Thread_data));
+	
+	int err = posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data));
+	if (err > 0) return ;
+
 	pthread_mutex_init(&(c_barrier.count_lock), NULL);
 	pthread_cond_init(&(c_barrier.count_cond), NULL);
 	pthread_barrier_init(&barrier, NULL, p);
@@ -443,8 +433,8 @@ void do_solve()
 	int i, j;
 	int tid;
 
-	//if (!posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data))) {return ;}
-	thread_data = malloc(p * sizeof(struct Thread_data));
+	int err = posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data));
+	if (err > 0) return ;
 
 	// - 1st phase -
 	while (++current < n)
