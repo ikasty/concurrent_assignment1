@@ -263,31 +263,39 @@ void *do_pthread(void *data)
 {
 	int tid = (intptr_t)data;
 	int i, j;
+	int local_current = current;
+	int block; // for block operation
 
 	dprintf("tid #%d is start...\n", tid);
 
 	// - 1st phase -
 	/*** current increase AFTER while statement ***/
-	while (current < n - 1)
+	while (local_current < n - 1)
 	{
 		// -- search *next* local pivot --
 		thread_data[tid].pivot_line = -1;
 		thread_data[tid].pivot = -DBL_MAX;
 
-		for (int block = tid; block <= block_count; block += p)
+		// block operation - operate column block
+		block = tid;
+		if (local_current / align > block)
+		{
+			// divide by p AND multiply by p - make sure each thread do same block
+			block += (local_current / align) / p * p;
+		}
+
+		for (; block <= block_count; block += p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
-			if (end_block < current) continue;
-			if (start_block <= current) start_block = current + 1;
+			if (start_block <= local_current) start_block = local_current + 1;
 
 			// -- set other to 0 --
-			//for (i = (current + 1) + tid; i < n; i += p)
 			for (i = start_block; i < end_block && i < n; i++)
 			{
-				if (thread_data[tid].pivot < A(i, (current + 1)))
+				if (thread_data[tid].pivot < A(i, (local_current + 1)))
 				{
-					thread_data[tid].pivot = A(i, (current + 1));
+					thread_data[tid].pivot = A(i, (local_current + 1));
 					thread_data[tid].pivot_line = i;
 				}
 			}
@@ -320,24 +328,34 @@ void *do_pthread(void *data)
 				while (pthread_cond_wait(&(c_barrier.count_cond), &(c_barrier.count_lock)) != 0);
 			}
 		pthread_mutex_unlock(&(c_barrier.count_lock));
+		local_current = current;
+
+		// terminal condition
+		if (local_current >= n) break;
 
 		// block operation - operate row block
-		for (int block = tid; block <= block_count; block += p)
+		block = tid;
+		if (local_current / align > block)
+		{
+			// divide by p AND multiply by p - make sure each thread do same block
+			block += (local_current / align) / p * p;
+		}
+
+		for (; block <= block_count; block += p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
-			if (end_block < current) continue;
-			if (start_block < current) start_block = current;
+			if (start_block < local_current) start_block = local_current;
 
 			// -- switching pivot --
-			if ( __builtin_expect(current != pivot_line, true) ) // usually true
+			if ( __builtin_expect(local_current != pivot_line, true) ) // usually true
 			{
 				double temp;
 
 				for (j = start_block; j < end_block && j < n; j++)
 				{
-					temp = A(current, j);
-					A(current, j) = A(pivot_line, j);
+					temp = A(local_current, j);
+					A(local_current, j) = A(pivot_line, j);
 					A(pivot_line, j) = temp;
 				}
 			}
@@ -345,7 +363,7 @@ void *do_pthread(void *data)
 			// -- set pivot to 1 --
 			for (j = start_block; j < end_block && j < n; j++)
 			{
-				A(current, j) /= pivot;
+				A(local_current, j) /= pivot;
 			}
 		}
 
@@ -357,19 +375,14 @@ void *do_pthread(void *data)
 				c_barrier.done_count = 0;
 
 				// switching & set on B
-				if ( __builtin_expect(current != pivot_line, true) ) // usually true
+				if ( __builtin_expect(local_current != pivot_line, true) ) // usually true
 				{
 					double temp;
-					temp = B(current);
-					B(current) = B(pivot_line);
+					temp = B(local_current);
+					B(local_current) = B(pivot_line);
 					B(pivot_line) = temp;
 				}
-				B(current) /= pivot;
-
-				#ifdef DEBUG_ENABLED
-//					print_result();
-//					dprintf("switch and divided on B\n\n");
-				#endif
+				B(local_current) /= pivot;
 
 				pthread_cond_broadcast(&(c_barrier.count_cond));
 			}
@@ -380,26 +393,32 @@ void *do_pthread(void *data)
 		pthread_mutex_unlock(&(c_barrier.count_lock));
 
 		// block operation - operate column block
-		//for (int block = (current / align) + tid; block <= block_count; block += p)
-		for (int block = tid; block <= block_count; block += p)
+		block = tid;
+		if (local_current / align > block)
+		{
+			// divide by p AND multiply by p - make sure each thread do same block
+			block += (local_current / align) / p * p;
+		}
+
+		for (; block <= block_count; block += p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
-			if (end_block < current) continue;
-			if (start_block <= current) start_block = current + 1;
+			if (start_block <= local_current) start_block = local_current + 1;
+			//dprintf("tid %d block %d, %d<= to <%d, local_current %d\n", tid, block, start_block, end_block, local_current);
 
 			// -- set other to 0 --
 			for (i = start_block; i < end_block && i < n; i++)
 			{
-				double target = -A(i, current);
+				double target = -A(i, local_current);
 
 				// doesn't need
-				// A(i, current) = 0;
-				for (j = (current + 1); j < n; j++)
+				// A(i, local_current) = 0;
+				for (j = (local_current + 1); j < n; j++)
 				{
-					A(i, j) += target * A(current, j);
+					A(i, j) += target * A(local_current, j);
 				}
-				B(i) += target * B(current);
+				B(i) += target * B(local_current);
 			}
 		}
 	}
@@ -426,13 +445,21 @@ void *do_pthread(void *data)
 		pthread_mutex_unlock(&(c_barrier.count_lock));
 
 		// -- back substitution --
-		for (int block = block_count - tid; block >= 0; block -= p)
+		block = block_count - tid;
+		if (current / align < block)
+		{
+			// divide by p AND multiply by p - make sure each thread do same block
+			block -= (block_count - (current / align)) / p * p;
+		}
+
+		for (; block >= 0; block -= p)
+		//for (block = block_count - tid; block >= 0; block -= p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
-			if (start_block > current) continue;
 			if (end_block > current) end_block = current;
 
+			dprintf("tid %d block %d, %d<= to <%d, current %d\n", tid, block, start_block, end_block, current);
 			for (i = start_block; i < end_block && i < current; i++)
 			{
 				double target = -A(i, current);
@@ -453,9 +480,8 @@ void do_solve()
 
 	pthread_attr_init(&thread_attr);
 
-	//int err = posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data));
-	//if (err > 0) return ;
-	thread_data = malloc(p * sizeof(struct Thread_data));
+	int err = posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data));
+	if (err > 0) return ;
 
 	block_count = n / align;
 
