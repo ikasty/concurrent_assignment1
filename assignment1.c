@@ -95,17 +95,22 @@ int main(int argc, char **argv)
 
 	// set array
 	struct drand48_data rand_buffer;
-//	srand(time(NULL));
-//	srand48_r(time(NULL), &rand_buffer);
+	#ifndef NORAND
+		srand48_r(time(NULL), &rand_buffer);
+	#endif
 	for (i = 0; i < n; i++)
 	{
 		for (j = 0; j < n + 1; j++)
 		{
-			//drand48_r(&rand_buffer, &A(i, j));
-			A(i, j) = (double)rand() / (RAND_MAX);
+			drand48_r(&rand_buffer, &A(i, j));
+			#ifdef NORAND
+				A(i, j) = (double)rand() / (RAND_MAX);
+			#endif
 		}
-		//drand48_r(&rand_buffer, &B(i));
-		B(i) = (double)rand() / (RAND_MAX);
+		drand48_r(&rand_buffer, &B(i));
+		#ifdef NORAND
+			B(i) = (double)rand() / (RAND_MAX);
+		#endif
 	}
 	clock_gettime(CLOCK_MONOTONIC, &finish);
 	total_time = ELAPSED(start, finish);
@@ -191,13 +196,7 @@ void do_solve()
 			temp = B(current);
 			B(current) = B(pivot_line);
 			B(pivot_line) = temp;
-
-			#ifdef DEBUG_ENABLED
-				print_result();
-				dprintf("switch pivot\n");
-			#endif
 		}
-
 
 		// -- set pivot to 1 --
 		for (j = current + 1; j < n; j++)
@@ -205,11 +204,6 @@ void do_solve()
 
 		B(current) /= pivot;
 		A(current, current) = 1;
-
-		#ifdef DEBUG_ENABLED
-			print_result();
-			dprintf("set pivot to 1\n");
-		#endif
 
 		// -- set other to 0 --
 		for (i = current + 1; i < n; i++)
@@ -221,11 +215,6 @@ void do_solve()
 			}
 			B(i) += target * B(current);
 		}
-
-		#ifdef DEBUG_ENABLED
-			print_result();
-			dprintf("set other to 0\n");
-		#endif
 	}
 	// - 1st phase end -
 
@@ -322,12 +311,7 @@ void *do_pthread(void *data)
 					}
 				}
 
-				#ifdef DEBUG_ENABLED
-//					print_result();
-//					dprintf("find pivot %.16f in %d\n\n", pivot, pivot_line);
-				#endif
-
-				// increase current
+				// increase local_current
 				current++;
 				pthread_cond_broadcast(&(c_barrier.count_cond));
 			}
@@ -356,11 +340,6 @@ void *do_pthread(void *data)
 					A(current, j) = A(pivot_line, j);
 					A(pivot_line, j) = temp;
 				}
-
-				#ifdef DEBUG_ENABLED
-//					print_result();
-//					dprintf("switching finished\n\n");
-				#endif
 			}
 
 			// -- set pivot to 1 --
@@ -368,10 +347,6 @@ void *do_pthread(void *data)
 			{
 				A(current, j) /= pivot;
 			}
-			#ifdef DEBUG_ENABLED
-//				print_result();
-//				dprintf("set pivot to 1\n\n");
-			#endif
 		}
 
 		// barrier
@@ -426,10 +401,6 @@ void *do_pthread(void *data)
 				}
 				B(i) += target * B(current);
 			}
-			#ifdef DEBUG_ENABLED
-//				print_result();
-//				dprintf("set to 0 finish\n\n");
-			#endif
 		}
 	}
 	current = n;
@@ -453,7 +424,6 @@ void *do_pthread(void *data)
 				while (pthread_cond_wait(&(c_barrier.count_cond), &(c_barrier.count_lock)) != 0);
 			}
 		pthread_mutex_unlock(&(c_barrier.count_lock));
-
 
 		// -- back substitution --
 		for (int block = block_count - tid; block >= 0; block -= p)
@@ -548,7 +518,6 @@ void do_solve()
 				pivot_line = thread_data[i].pivot_line;
 			}
 		}
-		dprintf("find pivot %.16f in %d\n", pivot, pivot_line);
 
 		// -- switch pivot --
 		if (current != pivot_line)
