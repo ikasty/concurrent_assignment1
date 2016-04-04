@@ -169,17 +169,18 @@ void do_solve()
 	while (++current < n)
 	{
 		int pivot_line = -1;
-		double pivot = -DBL_MAX;
+		double pivot = 0;
 
 		// -- search pivot --
 		for (i = current; i < n; i++)
 		{
-			if (pivot < A(i, current))
+			if (pivot < fabs(A(i, current)))
 			{
-				pivot = A(i, current);
+				pivot = fabs(A(i, current));
 				pivot_line = i;
 			}
 		}
+		pivot = A(pivot_line, current);
 		dprintf("find pivot %.16f in %d\n\n", pivot, pivot_line);
 
 		// -- switch pivot --
@@ -256,7 +257,7 @@ struct
 }	c_barrier;
 
 // align 64byte
-#define align (64 / sizeof(double))
+int align = 64 / sizeof(double);
 int block_count;
 
 void *do_pthread(void *data)
@@ -274,7 +275,7 @@ void *do_pthread(void *data)
 	{
 		// -- search *next* local pivot --
 		thread_data[tid].pivot_line = -1;
-		thread_data[tid].pivot = -DBL_MAX;
+		thread_data[tid].pivot = 0;
 
 		// block operation - operate column block
 		block = tid;
@@ -284,18 +285,18 @@ void *do_pthread(void *data)
 			block += (local_current / align) / p * p;
 		}
 
-		for (; block <= block_count; block += p)
+		for (; block < block_count; block += p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
 			if (start_block <= local_current) start_block = local_current + 1;
 
-			// -- set other to 0 --
+			// -- search pivot --
 			for (i = start_block; i < end_block && i < n; i++)
 			{
-				if (thread_data[tid].pivot < A(i, (local_current + 1)))
+				if (thread_data[tid].pivot < fabs(A(i, (local_current + 1))))
 				{
-					thread_data[tid].pivot = A(i, (local_current + 1));
+					thread_data[tid].pivot = fabs(A(i, (local_current + 1)));
 					thread_data[tid].pivot_line = i;
 				}
 			}
@@ -309,17 +310,18 @@ void *do_pthread(void *data)
 				c_barrier.done_count = 0;
 
 				// --- collect pivot ---
-				pivot = -DBL_MAX;
+				pivot = 0;
 				for (i = 0; i < p; i++)
 				{
-					if (pivot < thread_data[i].pivot)
+					if (pivot < fabs(thread_data[i].pivot))
 					{
-						pivot = thread_data[i].pivot;
+						pivot = fabs(thread_data[i].pivot);
 						pivot_line = thread_data[i].pivot_line;
 					}
 				}
+				pivot = A(pivot_line, current + 1);
 
-				// increase local_current
+				// increase current
 				current++;
 				pthread_cond_broadcast(&(c_barrier.count_cond));
 			}
@@ -341,7 +343,7 @@ void *do_pthread(void *data)
 			block += (local_current / align) / p * p;
 		}
 
-		for (; block <= block_count; block += p)
+		for (; block < block_count; block += p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
@@ -383,7 +385,7 @@ void *do_pthread(void *data)
 					B(pivot_line) = temp;
 				}
 				B(local_current) /= pivot;
-
+				
 				pthread_cond_broadcast(&(c_barrier.count_cond));
 			}
 			else
@@ -400,7 +402,7 @@ void *do_pthread(void *data)
 			block += (local_current / align) / p * p;
 		}
 
-		for (; block <= block_count; block += p)
+		for (; block < block_count; block += p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
@@ -413,7 +415,7 @@ void *do_pthread(void *data)
 				double target = -A(i, local_current);
 
 				// doesn't need
-				// A(i, local_current) = 0;
+				A(i, local_current) = 0;
 				for (j = (local_current + 1); j < n; j++)
 				{
 					A(i, j) += target * A(local_current, j);
@@ -453,7 +455,6 @@ void *do_pthread(void *data)
 		}
 
 		for (; block >= 0; block -= p)
-		//for (block = block_count - tid; block >= 0; block -= p)
 		{
 			int start_block = block * align;
 			int end_block = (block + 1) * align;
@@ -483,7 +484,8 @@ void do_solve()
 	int err = posix_memalign((void **)&thread_data, 0x40, p * sizeof(struct Thread_data));
 	if (err > 0) return ;
 
-	block_count = n / align;
+	// -1(zero-based) / align + 1(upper bound)
+	block_count = (n - 1) / align + 1;
 
 	// barrier init
 	c_barrier.done_count = 0;
@@ -517,33 +519,34 @@ void do_solve()
 	while (++current < n)
 	{
 		int pivot_line = -1;
-		double pivot = -DBL_MAX;
+		double pivot = 0;
 
 		// -- search pivot --
 		#pragma omp parallel num_threads(p) default(none) private(i, tid) shared(thread_data, current, n, _A)
 		{
 			tid = omp_get_thread_num();
 			thread_data[tid].pivot_line = -1;
-			thread_data[tid].pivot = -DBL_MAX;
+			thread_data[tid].pivot = 0;
 
 			#pragma omp for
 			for (i = current; i < n; i++)
 			{
-				if (thread_data[tid].pivot < A(i, current))
+				if (thread_data[tid].pivot < fabs(A(i, current)))
 				{
-					thread_data[tid].pivot = A(i, current);
+					thread_data[tid].pivot = fabs(A(i, current));
 					thread_data[tid].pivot_line = i;
 				}
 			}
 		}
 		for (i = 0; i < p; i++)
 		{
-			if (pivot < thread_data[i].pivot)
+			if (pivot < fabs(thread_data[i].pivot))
 			{
-				pivot = thread_data[i].pivot;
+				pivot = fabs(thread_data[i].pivot);
 				pivot_line = thread_data[i].pivot_line;
 			}
 		}
+		pivot = A(pivot_line, current);
 
 		// -- switch pivot --
 		if (current != pivot_line)
@@ -589,6 +592,7 @@ void do_solve()
 			}
 		}
 		#ifdef DEBUG_ENABLED
+			printf("\n");
 			print_result();
 		#endif
 	}
